@@ -1,0 +1,31 @@
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets and local config
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs and runtime files
+*.log
+logs/
+*.pid
+nohup.out
+
+# Tunnels (not needed for Streamlit Community Cloud)
+cloudflared*
+*.exe
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
