@@ -784,8 +784,7 @@ with st.expander("📜 The case"):
 
 with st.expander("✅ Confirmed clues"):
     for i, clue in enumerate(CASE_CLUES, start=1):
-        tag = "" if i in ENCODED_NUMBERS else "  *(not encoded in the solver)*"
-        st.markdown(f"{i}. {clue}{tag}")
+        st.markdown(f"{i}. {clue}")
     st.caption(f"{len(ENCODED_CLUES)} clues are encoded as constraints in the current solver.")
     if NOT_ENCODED:
         st.info(
