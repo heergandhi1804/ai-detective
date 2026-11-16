@@ -45,6 +45,6 @@ The app needs no secrets or environment variables.
 ## Notes
 
 - All deductions follow the puzzle's encoded rules and modelling assumptions. They are not real-world facts.
-- The notebook still contains four failing checks inherited from the original project
-  (for example "KB proves Kabir is innocent"). They are reported in the notebook output and
-  do not affect deployment.
+- All 13 clues are encoded. The original case leaves 3 of the 192 hypotheses after CSP and logic.
+- Clues 1, 3, 6 and 7 can be edited on the main page to explore a modified case. The CPTs and the HMM
+  were written for the original story, so probabilities in a modified case are illustrative only.

@@ -5,6 +5,7 @@ CSE518 Artificial Intelligence, Monsoon 2026 - Streamlit interface
 Run locally:   streamlit run app.py
 The solver code below is copied unchanged from the project notebook (Sections 1-8 and 10).
 The interface code at the end only calls those functions through small wrappers.
+Editable clues: new wrapper code builds fresh constraint lists and a fresh KB for each script run.
 """
 import hashlib
 import io
@@ -63,6 +64,9 @@ unary_constraints = [
 binary_constraints = [
     ("Weapon", "Location", lambda w, loc: implies(w == "Knife", loc == "Kitchen"),
      "Clue 4: No knife ever left the kitchen."),
+    ("Location", "Time", lambda loc, t: implies(loc == "Kitchen", t == "8 PM"),
+     "Clue 5: Kitchen helpers were in the kitchen all evening except at 8 PM, "
+     "so nobody could commit a murder there at 9 PM or 10 PM without being seen."),
     ("Culprit", "Location", lambda c, loc: implies(c == "Kabir", loc == "Kitchen"),
      "Clue 6: Kabir never left the kitchen."),
     ("Weapon", "Location", lambda w, loc: implies(w == "Trophy", loc == "Library"),
@@ -210,6 +214,7 @@ KB = [
     ("Clue 2",  lambda m: not m["L_Garden"]),
     ("Clue 3",  lambda m: not m["T_8PM"]),
     ("Clue 4",  lambda m: implies(m["W_Knife"], m["L_Kitchen"])),
+    ("Clue 5",  lambda m: implies(m["L_Kitchen"], m["T_8PM"])),
     ("Clue 6",  lambda m: implies(m["C_Kabir"], m["L_Kitchen"])),
     ("Clue 7",  lambda m: implies(m["W_Trophy"], m["L_Library"])),
     ("Clue 8",  lambda m: implies(m["L_Library"], not m["T_10PM"])),
@@ -583,7 +588,8 @@ CASE_CLUES = [
     "It rained all evening and there were no footprints in the garden.",
     "Vikram gave a speech to all the guests at 8 PM, so he was alive at 8 PM.",
     "No knife ever left the kitchen.",
-    "Kitchen helpers were in the kitchen all evening except at 8 PM, when they went to hear the speech.",
+    "Kitchen helpers were in the kitchen all evening except at 8 PM, so nobody could commit a murder "
+    "there at 9 PM or 10 PM without being seen.",
     "CCTV shows that Kabir never left the kitchen.",
     "The trophy is heavy and never left the library.",
     "The library was locked at 9:30 PM.",
@@ -595,13 +601,151 @@ CASE_CLUES = [
 ]
 ENCODED_CLUES = [c for _, _, c in unary_constraints] + [c for _, _, _, c in binary_constraints]
 ENCODED_NUMBERS = sorted(int(re.search(r"Clue (\d+)", c).group(1)) for c in ENCODED_CLUES)
-NOT_ENCODED = [n for n in range(1, len(CASE_CLUES) + 1) if n not in ENCODED_NUMBERS]
+
+
+# =====================================================================
+# EDITABLE CLUES (new wrapper code, the solver functions are not changed)
+# =====================================================================
+# The solver functions read the globals unary_constraints, binary_constraints, KB and kb_models.
+# Streamlit runs this script in a fresh module for every rerun of every session, so these globals
+# belong to one run of one user only. use_clues() points them at NEW lists built from the clue
+# settings. The notebook lists below and the cached models are never changed in place.
+BASE_UNARY = unary_constraints        # the notebook's lists = the original case
+BASE_BINARY = binary_constraints
+BASE_KB = KB
+
+# dropdown values of the original case
+DEFAULT_CLUES = {
+    "c1_found": "did not find", "c1_weapon": "Poison",
+    "c3_time": "8 PM",
+    "c6_suspect": "Kabir", "c6_location": "Kitchen",
+    "c7_weapon": "Trophy", "c7_location": "Library",
+}
+EDITABLE = {1: ["c1_found", "c1_weapon"], 3: ["c3_time"],
+            6: ["c6_suspect", "c6_location"], 7: ["c7_weapon", "c7_location"]}
+FOUND_CHOICES = ["found", "did not find"]
+STALE_TEXT = "Clues changed, press Solve Case to update."
+MODIFIED_NOTE = ("The Bayesian CPTs and HMM were written for the original story, "
+                 "so probabilities here are illustrative only.")
+
+# propositional form of each clue in the original case (display text only, ~ is NOT)
+FORMULAS = {
+    1: "~W_Poison", 2: "~L_Garden", 3: "~T_8PM",
+    4: "W_Knife ⇒ L_Kitchen", 5: "L_Kitchen ⇒ T_8PM", 6: "C_Kabir ⇒ L_Kitchen",
+    7: "W_Trophy ⇒ L_Library", 8: "L_Library ⇒ ~T_10PM", 9: "L_Balcony ⇒ ~T_9PM",
+    10: "W_Scarf ⇒ (C_Anita ∨ C_Meera)", 11: "C_Anita ⇒ ~W_Trophy",
+    12: "C_Meera ⇒ ~T_9PM", 13: "C_Anita ⇒ ~T_10PM",
+}
+
+
+def clue_number(text):
+    found = re.search(r"Clue (\d+)", text)
+    return int(found.group(1)) if found else None
+
+
+def is_original(c, n):
+    """True if editable clue n has the same dropdown values as the original case."""
+    return all(c[k] == DEFAULT_CLUES[k] for k in EDITABLE[n])
+
+
+def changed_clues(c):
+    return [n for n in EDITABLE if not is_original(c, n)]
+
+
+def keep_original(n, c):
+    """Use the notebook's own entry unless n is an editable clue that was changed."""
+    return n not in EDITABLE or is_original(c, n)
+
+
+def clue_sentence(n, c):
+    if n == 1:
+        return f"The autopsy {c['c1_found']} {c['c1_weapon']}."
+    if n == 3:
+        return f"Vikram was alive at {c['c3_time']}."
+    if n == 6:
+        return f"CCTV shows {c['c6_suspect']} never left the {c['c6_location']}."
+    if n == 7:
+        return f"The {c['c7_weapon']} never left the {c['c7_location']}."
+    return CASE_CLUES[n - 1]
+
+
+def clue_formula(n, c):
+    if n == 1:
+        s = sym("Weapon", c["c1_weapon"])
+        return s if c["c1_found"] == "found" else "~" + s
+    if n == 3:
+        return "~" + sym("Time", c["c3_time"])
+    if n == 6:
+        return sym("Culprit", c["c6_suspect"]) + " ⇒ " + sym("Location", c["c6_location"])
+    if n == 7:
+        return sym("Weapon", c["c7_weapon"]) + " ⇒ " + sym("Location", c["c7_location"])
+    return FORMULAS[n]
+
+
+def hypothesis_formula(h):
+    return " ∧ ".join(h_symbols(h))
+
+
+def new_constraint(n, c):
+    """CSP constraint for a changed clue, in the same tuple format as the notebook lists."""
+    text = f"Clue {n}: {clue_sentence(n, c)}"
+    if n == 1:
+        w = c["c1_weapon"]
+        if c["c1_found"] == "found":
+            return ("Weapon", lambda x: x == w, text)
+        return ("Weapon", lambda x: x != w, text)
+    if n == 3:
+        t = c["c3_time"]
+        return ("Time", lambda x: x != t, text)
+    if n == 6:
+        s, loc = c["c6_suspect"], c["c6_location"]
+        return ("Culprit", "Location", lambda x, y: implies(x == s, y == loc), text)
+    w, loc = c["c7_weapon"], c["c7_location"]
+    return ("Weapon", "Location", lambda x, y: implies(x == w, y == loc), text)
+
+
+def new_sentence(n, c):
+    """KB sentence for a changed clue."""
+    if n == 1:
+        s = sym("Weapon", c["c1_weapon"])
+        if c["c1_found"] == "found":
+            return lambda m: m[s]
+        return lambda m: not m[s]
+    if n == 3:
+        s = sym("Time", c["c3_time"])
+        return lambda m: not m[s]
+    if n == 6:
+        a, b = sym("Culprit", c["c6_suspect"]), sym("Location", c["c6_location"])
+    else:
+        a, b = sym("Weapon", c["c7_weapon"]), sym("Location", c["c7_location"])
+    return lambda m: implies(m[a], m[b])
+
+
+def build_constraints(c):
+    """New unary and binary lists for these clue settings (clue order is kept)."""
+    unary, binary = [], []
+    for item in BASE_UNARY:
+        n = clue_number(item[-1])
+        unary.append(item if keep_original(n, c) else new_constraint(n, c))
+    for item in BASE_BINARY:
+        n = clue_number(item[-1])
+        binary.append(item if keep_original(n, c) else new_constraint(n, c))
+    return unary, binary
+
+
+def build_kb(c):
+    """New KB for these clue settings."""
+    kb = []
+    for name, sentence in BASE_KB:
+        n = clue_number(name)
+        kb.append((name, sentence) if keep_original(n, c) else (name, new_sentence(n, c)))
+    return kb
 
 
 @st.cache_data(show_spinner=False)
-def load_kb_models(source_version):
-    """Same truth-table loop as the notebook. Returns plain dicts, so it is safe to share.
-    source_version (a hash of this file) makes the cache refresh if the KB code is edited."""
+def load_kb_models(source_version, clue_key):
+    """Same truth-table loop as the notebook, run on this run's KB. Returns plain dicts only.
+    The key is a hash of this file plus the clue settings, so every clue setting has its own entry."""
     models = []
     for values in product([True, False], repeat=len(SYMBOLS)):
         m = dict(zip(SYMBOLS, values))
@@ -610,7 +754,38 @@ def load_kb_models(source_version):
     return models
 
 
-kb_models = load_kb_models(hashlib.sha256(Path(__file__).read_bytes()).hexdigest())   # used by entails() and ask()
+SOURCE_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def use_clues(c):
+    """Points this run's solver globals at new constraint lists and a new KB for the clue settings c."""
+    global unary_constraints, binary_constraints, KB, kb_models
+    unary_constraints, binary_constraints = build_constraints(c)
+    KB = build_kb(c)
+    kb_models = load_kb_models(SOURCE_VERSION, tuple(sorted(c.items())))   # used by entails() and ask()
+
+
+def run_case(c):
+    use_clues(c)
+    return solve_case()
+
+
+def current_clues():
+    """Clue settings shown in the dropdowns right now."""
+    return {k: st.session_state.get(f"clue_{k}", v) for k, v in DEFAULT_CLUES.items()}
+
+
+def active_clues():
+    """Clue settings of the last Solve (the original case before the first Solve)."""
+    return st.session_state.get("solved_clues", DEFAULT_CLUES)
+
+
+def reset_clues():
+    for k, v in DEFAULT_CLUES.items():
+        st.session_state[f"clue_{k}"] = v
+
+
+use_clues(active_clues())   # every tab below uses the clue settings of the last Solve
 
 
 def domain_combinations(doms):
@@ -738,8 +913,10 @@ def proven_by_logic(h):
 def reset_all():
     st.session_state.pop("results", None)
     st.session_state.pop("check_result", None)
+    st.session_state.pop("solved_clues", None)
     for name in EVIDENCE_NODES:
         st.session_state[f"ev_{name}"] = default_choice(name)
+    reset_clues()
 
 
 # =====================================================================
@@ -760,6 +937,9 @@ st.markdown(
 for _name in EVIDENCE_NODES:
     if f"ev_{_name}" not in st.session_state:
         st.session_state[f"ev_{_name}"] = default_choice(_name)
+for _k, _v in DEFAULT_CLUES.items():
+    if f"clue_{_k}" not in st.session_state:
+        st.session_state[f"clue_{_k}"] = _v
 
 st.title("🔍 AI Detective")
 st.markdown(
@@ -782,33 +962,83 @@ with st.expander("📜 The case"):
         f"- **Times:** {', '.join(TIMES)}"
     )
 
-with st.expander("✅ Confirmed clues"):
-    for i, clue in enumerate(CASE_CLUES, start=1):
-        st.markdown(f"{i}. {clue}")
-    st.caption(f"{len(ENCODED_CLUES)} clues are encoded as constraints in the current solver.")
-    if NOT_ENCODED:
-        st.info(
-            "Clue " + ", ".join(str(n) for n in NOT_ENCODED) +
-            " is in the case text but is not one of the solver's constraints, so it does not affect the results."
-        )
-
 with st.expander("❓ Uncertain evidence (used only by the Bayesian network)"):
     for name in EVIDENCE_NODES:
         st.markdown(f"- **{name}:** {EVIDENCE[name]['text']}")
     st.caption("These items are not confirmed facts. They change probabilities, never the hard constraints.")
 
+# ---------------- Confirmed clues (clues 1, 3, 6 and 7 are editable) ----------------
+st.subheader("✅ Confirmed clues")
+st.caption("Each clue is shown with its propositional form (~ NOT, ∧ AND, ∨ OR, ⇒ IMPLIES). "
+           "Clues 1, 3, 6 and 7 can be changed with the dropdowns; the other clues are fixed.")
+
+
+def fixed_clue_row(n):
+    a, b = st.columns([3, 1.5], vertical_alignment="center")
+    a.markdown(f"{n}. {CASE_CLUES[n - 1]}")
+    b.markdown(f"`{FORMULAS[n]}`")
+
+
+def editable_clue_row(n, parts):
+    """parts: text pieces and (label, options, key) dropdowns, shown left to right, then the live formula."""
+    cols = st.columns([1.3 if isinstance(p, str) else 1.2 for p in parts] + [1.5], vertical_alignment="center")
+    for col, p in zip(cols, parts):
+        if isinstance(p, str):
+            col.markdown(p)
+        else:
+            col.selectbox(p[0], p[1], key=p[2], label_visibility="collapsed")
+    cols[-1].markdown(f"`{clue_formula(n, current_clues())}`")
+
+
+for n in range(1, len(CASE_CLUES) + 1):
+    if n == 1:
+        editable_clue_row(1, ["1. The autopsy", ("Clue 1: found or not", FOUND_CHOICES, "clue_c1_found"),
+                              ("Clue 1: weapon", WEAPONS, "clue_c1_weapon")])
+    elif n == 3:
+        editable_clue_row(3, ["3. Vikram was alive at", ("Clue 3: time", TIMES, "clue_c3_time")])
+    elif n == 6:
+        editable_clue_row(6, ["6. CCTV shows", ("Clue 6: suspect", SUSPECTS, "clue_c6_suspect"),
+                              "never left the", ("Clue 6: location", LOCATIONS, "clue_c6_location")])
+    elif n == 7:
+        editable_clue_row(7, ["7. The", ("Clue 7: weapon", WEAPONS, "clue_c7_weapon"),
+                              "never left the", ("Clue 7: location", LOCATIONS, "clue_c7_location")])
+    else:
+        fixed_clue_row(n)
+
+r1, r2 = st.columns([1, 3], vertical_alignment="center")
+r1.button("Reset clues", on_click=reset_clues, width="stretch")
+r2.caption(f"{len(ENCODED_NUMBERS)} of {len(CASE_CLUES)} clues are encoded as constraints in the solver. "
+           "Reset clues restores clues 1, 3, 6 and 7 only.")
+
 # ---------------- 2. Solve workflow ----------------
 c1, c2 = st.columns(2)
 if c1.button("Solve Case", type="primary", width="stretch"):
+    clues_now = current_clues()
     with st.spinner("Reasoning through the clues..."):
-        st.session_state["results"] = solve_case()
+        original_count = None
+        if changed_clues(clues_now):
+            original_count = len(run_case(DEFAULT_CLUES)["logic"])   # original case, for the comparison
+        results = run_case(clues_now)        # run last, so the globals stay on the solved clues
+        results["original_count"] = original_count
+    st.session_state["results"] = results
+    st.session_state["solved_clues"] = dict(clues_now)
 c2.button("Reset", on_click=reset_all, width="stretch")
 
 res = st.session_state.get("results")
+solved = active_clues()
+stale = current_clues() != solved     # dropdowns differ from the clues the results were computed with
 
-if res is None:
+if stale:
+    st.warning(STALE_TEXT)
+elif res is None:
     st.info("Press **Solve Case** to run CSP → logical inference → Bayesian ranking.")
 else:
+    if changed_clues(solved):
+        changes = "\n".join(
+            f"- Clue {n}: {clue_sentence(n, DEFAULT_CLUES)} `{clue_formula(n, DEFAULT_CLUES)}` → "
+            f"{clue_sentence(n, solved)} `{clue_formula(n, solved)}`" for n in changed_clues(solved))
+        st.info(f"**Modified case**\n\n{changes}\n\n"
+                f"Original: {res['original_count']} hypotheses → Modified: {len(res['logic'])}\n\n{MODIFIED_NOTE}")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Initial hypotheses", TOTAL_HYPOTHESES)
     m2.metric("Domain combinations after AC-3", domain_combinations(res["ac3"]) if res["ac3"] else 0)
@@ -818,12 +1048,15 @@ else:
         "Domain combinations are only an upper bound (AC-3 checks two variables at a time). "
         "CSP solutions are complete hypotheses that break no encoded clue."
     )
+    reasons = []
     if res["ac3"] is None:
-        st.error("AC-3 emptied a domain: the encoded clues contradict each other. There is no valid hypothesis.")
+        reasons.append("AC-3 emptied a domain")
     elif len(res["csp"]) == 0:
-        st.error("Backtracking found no complete hypothesis that satisfies every clue.")
+        reasons.append("backtracking found no complete hypothesis that satisfies every clue")
     if not res["kb_ok"]:
-        st.error("Inconsistent knowledge base: the KB has no satisfying model.")
+        reasons.append("the KB has no satisfying model")
+    if reasons:
+        st.error("**These clues contradict each other** (" + "; ".join(reasons) + "). There is no valid hypothesis.")
 
 tab_rank, tab_logic, tab_check, tab_hmm, tab_diag = st.tabs(
     ["Verdict", "Logic queries", "Check a hypothesis", "Timeline (HMM)", "Diagnostics"]
@@ -842,11 +1075,15 @@ with tab_rank:
 
     obs = current_observed()
 
-    if res is None:
+    if stale:
+        st.warning(STALE_TEXT)
+    elif res is None:
         st.info("Solve the case first to see the ranking.")
     elif len(res["logic"]) == 0:
         st.warning("No hypothesis is left after CSP and logic, so there is nothing to rank.")
     else:
+        if changed_clues(solved):
+            st.warning(MODIFIED_NOTE)
         rows, err = safe_ranking(res["logic"], obs)
         if err:
             st.error(f"The ranking could not be computed with this evidence: {err}")
@@ -935,13 +1172,18 @@ with tab_rank:
 # ---------------- 5. Logical queries ----------------
 with tab_logic:
     st.subheader("Ask the knowledge base")
-    if len(kb_models) == 0:
-        st.error("Inconsistent knowledge base: no model satisfies it, so no truth claims are shown.")
+    q1, q2 = st.columns(2)
+    q_var = q1.selectbox("Variable", variables, key="q_var")
+    q_val = q2.selectbox("Value", domains[q_var], key=f"q_val_{q_var}")
+    if stale:
+        st.warning(STALE_TEXT)
+    elif len(kb_models) == 0:
+        st.error("**These clues contradict each other:** no model satisfies the KB, so no truth claims are shown.")
     else:
-        q1, q2 = st.columns(2)
-        q_var = q1.selectbox("Variable", variables, key="q_var")
-        q_val = q2.selectbox("Value", domains[q_var], key=f"q_val_{q_var}")
-        answer = ASK_LABELS[ask(sym(q_var, q_val))]
+        s = sym(q_var, q_val)
+        st.markdown(f"`KB ⊨ {s} ?` **{'Yes' if entails(lambda m: m[s]) else 'No'}**  \n"
+                    f"`KB ⊨ ~{s} ?` **{'Yes' if entails(lambda m: not m[s]) else 'No'}**")
+        answer = ASK_LABELS[ask(s)]
         if q_var == "Culprit":
             text = {"Proven true": f"The KB proves {q_val} is the culprit.",
                     "Proven false": f"The KB proves {q_val} is not the culprit.",
@@ -969,15 +1211,17 @@ with tab_check:
         hl = f3.selectbox("Location", LOCATIONS)
         ht = f4.selectbox("Time", TIMES)
         if st.form_submit_button("Check hypothesis", width="stretch"):
-            h = {"Culprit": hc, "Weapon": hw, "Location": hl, "Time": ht}
-            st.session_state["check_result"] = {"h": h, "broken": broken_clues(h)}
+            st.session_state["check_result"] = {"h": {"Culprit": hc, "Weapon": hw, "Location": hl, "Time": ht}}
     result = st.session_state.get("check_result")
-    if result:
-        st.markdown(f"**{describe(result['h'])}**")
-        if result["broken"]:
+    if result and stale:
+        st.warning(STALE_TEXT)
+    elif result:
+        broken = broken_clues(result["h"])     # checked against the clues of the last Solve
+        st.markdown(f"**{describe(result['h'])}**  \n`{hypothesis_formula(result['h'])}`")
+        if broken:
             st.error("Not possible. It breaks these encoded constraints:")
-            for clue in result["broken"]:
-                st.markdown(f"- {clue}")
+            for clue in broken:
+                st.markdown(f"- {clue} `{clue_formula(clue_number(clue), solved)}`")
         else:
             st.success("Consistent with the clues.")
             st.caption("No encoded constraint rules it out. That does not mean it is proven.")
@@ -985,6 +1229,8 @@ with tab_check:
 # ---------------- 7. Temporal reasoning ----------------
 with tab_hmm:
     st.subheader("When did it happen?")
+    if res is not None and not stale and changed_clues(solved):
+        st.warning(MODIFIED_NOTE + " The HMM is not recalculated for the modified clues.")
     hmm, hmm_err = safe_hmm()
     if hmm_err:
         st.error(f"The HMM could not be computed: {hmm_err}")
@@ -1008,7 +1254,9 @@ with tab_hmm:
 
         best_p = max(tp.values()) if tp else None
         hmm_times = [t for t, p in tp.items() if best_p is not None and abs(p - best_p) < 1e-12]
-        if res and res["logic"]:
+        if stale:
+            st.caption(STALE_TEXT)
+        elif res and res["logic"]:
             rows_now, _ = safe_ranking(res["logic"], current_observed())
             if rows_now and hmm_times:
                 top_time = rows_now[0]["hypothesis"]["Time"]
@@ -1027,9 +1275,18 @@ with tab_hmm:
 
 # ---------------- 8. Diagnostics ----------------
 with tab_diag:
-    if res is None:
+    if stale:
+        st.warning(STALE_TEXT)
+    elif res is None:
         st.info("Solve the case to see the diagnostics.")
     else:
+        st.markdown("**Encoded clues used in the last Solve**")
+        active_labels = [c for _, _, c in unary_constraints] + [c for _, _, _, c in binary_constraints]
+        st.dataframe(pd.DataFrame([{
+            "Clue": clue_number(c),
+            "Constraint": c.split(": ", 1)[1],
+            "Formula": clue_formula(clue_number(c), solved),
+        } for c in sorted(active_labels, key=clue_number)]), hide_index=True, width="stretch")
         st.dataframe(pd.DataFrame([{
             "Variable": v,
             "Initial": ", ".join(res["initial"][v]),
