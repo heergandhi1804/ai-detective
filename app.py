@@ -621,6 +621,8 @@ DEFAULT_CLUES = {
     "c6_suspect": "Kabir", "c6_location": "Kitchen",
     "c7_weapon": "Trophy", "c7_location": "Library",
 }
+CLUE_NUMBERS = list(range(1, len(CASE_CLUES) + 1))
+DEFAULT_CLUES.update({f"on_{n}": True for n in CLUE_NUMBERS})   # checkbox of each clue: ticked = used
 EDITABLE = {1: ["c1_found", "c1_weapon"], 3: ["c3_time"],
             6: ["c6_suspect", "c6_location"], 7: ["c7_weapon", "c7_location"]}
 FOUND_CHOICES = ["found", "did not find"]
@@ -648,8 +650,22 @@ def is_original(c, n):
     return all(c[k] == DEFAULT_CLUES[k] for k in EDITABLE[n])
 
 
+def is_on(c, n):
+    """True if clue n is ticked (used in the CSP and the KB)."""
+    return c.get(f"on_{n}", True)
+
+
 def changed_clues(c):
-    return [n for n in EDITABLE if not is_original(c, n)]
+    """Ticked dropdown clues whose values differ from the original case (unticked ones are not used)."""
+    return [n for n in EDITABLE if is_on(c, n) and not is_original(c, n)]
+
+
+def off_clues(c):
+    return [n for n in CLUE_NUMBERS if not is_on(c, n)]
+
+
+def is_modified(c):
+    return bool(changed_clues(c) or off_clues(c))
 
 
 def keep_original(n, c):
@@ -722,30 +738,33 @@ def new_sentence(n, c):
 
 
 def build_constraints(c):
-    """New unary and binary lists for these clue settings (clue order is kept)."""
+    """New unary and binary lists for these clue settings (clue order is kept, unticked clues are left out)."""
     unary, binary = [], []
     for item in BASE_UNARY:
         n = clue_number(item[-1])
-        unary.append(item if keep_original(n, c) else new_constraint(n, c))
+        if is_on(c, n):
+            unary.append(item if keep_original(n, c) else new_constraint(n, c))
     for item in BASE_BINARY:
         n = clue_number(item[-1])
-        binary.append(item if keep_original(n, c) else new_constraint(n, c))
+        if is_on(c, n):
+            binary.append(item if keep_original(n, c) else new_constraint(n, c))
     return unary, binary
 
 
 def build_kb(c):
-    """New KB for these clue settings."""
+    """New KB for these clue settings. The 'exactly one' sentences are always kept; unticked clues are left out."""
     kb = []
     for name, sentence in BASE_KB:
         n = clue_number(name)
-        kb.append((name, sentence) if keep_original(n, c) else (name, new_sentence(n, c)))
+        if n is None or is_on(c, n):
+            kb.append((name, sentence) if keep_original(n, c) else (name, new_sentence(n, c)))
     return kb
 
 
 @st.cache_data(show_spinner=False)
 def load_kb_models(source_version, clue_key):
     """Same truth-table loop as the notebook, run on this run's KB. Returns plain dicts only.
-    The key is a hash of this file plus the clue settings, so every clue setting has its own entry."""
+    The key is a hash of this file plus the clue settings (dropdowns and ticks), so each setting has its own entry."""
     models = []
     for values in product([True, False], repeat=len(SYMBOLS)):
         m = dict(zip(SYMBOLS, values))
@@ -771,7 +790,7 @@ def run_case(c):
 
 
 def current_clues():
-    """Clue settings shown in the dropdowns right now."""
+    """Clue settings shown in the dropdowns and checkboxes right now."""
     return {k: st.session_state.get(f"clue_{k}", v) for k, v in DEFAULT_CLUES.items()}
 
 
@@ -781,8 +800,14 @@ def active_clues():
 
 
 def reset_clues():
+    """Restores the dropdowns and ticks every clue."""
     for k, v in DEFAULT_CLUES.items():
         st.session_state[f"clue_{k}"] = v
+
+
+def tick_all(value):
+    for n in CLUE_NUMBERS:
+        st.session_state[f"clue_on_{n}"] = value
 
 
 use_clues(active_clues())   # every tab below uses the clue settings of the last Solve
@@ -968,47 +993,64 @@ with st.expander("❓ Uncertain evidence (used only by the Bayesian network)"):
     st.caption("These items are not confirmed facts. They change probabilities, never the hard constraints.")
 
 # ---------------- Confirmed clues (clues 1, 3, 6 and 7 are editable) ----------------
-st.subheader("✅ Confirmed clues")
-st.caption("Each clue is shown with its propositional form (~ NOT, ∧ AND, ∨ OR, ⇒ IMPLIES). "
-           "Clues 1, 3, 6 and 7 can be changed with the dropdowns; the other clues are fixed.")
+def formula_text(n, formula):
+    """Formula of clue n, marked 'off' (in grey) when the clue is unticked."""
+    if is_on(current_clues(), n):
+        return f"`{formula}`"
+    return f":gray[`{formula}` (off)]"
+
+
+def number_label(text):
+    """Checkbox label: escape the first '.' so '5. ...' is not read as a markdown list (keeps the number)."""
+    return text.replace(".", "\\.", 1)
 
 
 def fixed_clue_row(n):
     a, b = st.columns([3, 1.5], vertical_alignment="center")
-    a.markdown(f"{n}. {CASE_CLUES[n - 1]}")
-    b.markdown(f"`{FORMULAS[n]}`")
+    a.checkbox(number_label(f"{n}. {CASE_CLUES[n - 1]}"), key=f"clue_on_{n}")
+    b.markdown(formula_text(n, FORMULAS[n]))
 
 
 def editable_clue_row(n, parts):
-    """parts: text pieces and (label, options, key) dropdowns, shown left to right, then the live formula."""
+    """parts: the text before the first dropdown (checkbox label), then text pieces and (label, options, key)
+    dropdowns, shown left to right, then the live formula. Dropdowns of an unticked clue are greyed out."""
     cols = st.columns([1.3 if isinstance(p, str) else 1.2 for p in parts] + [1.5], vertical_alignment="center")
-    for col, p in zip(cols, parts):
+    cols[0].checkbox(number_label(parts[0]), key=f"clue_on_{n}")
+    off = not is_on(current_clues(), n)
+    for col, p in zip(cols[1:], parts[1:]):
         if isinstance(p, str):
-            col.markdown(p)
+            col.markdown(f":gray[{p}]" if off else p)
         else:
-            col.selectbox(p[0], p[1], key=p[2], label_visibility="collapsed")
-    cols[-1].markdown(f"`{clue_formula(n, current_clues())}`")
+            col.selectbox(p[0], p[1], key=p[2], label_visibility="collapsed", disabled=off)
+    cols[-1].markdown(formula_text(n, clue_formula(n, current_clues())))
 
 
-for n in range(1, len(CASE_CLUES) + 1):
-    if n == 1:
-        editable_clue_row(1, ["1. The autopsy", ("Clue 1: found or not", FOUND_CHOICES, "clue_c1_found"),
-                              ("Clue 1: weapon", WEAPONS, "clue_c1_weapon")])
-    elif n == 3:
-        editable_clue_row(3, ["3. Vikram was alive at", ("Clue 3: time", TIMES, "clue_c3_time")])
-    elif n == 6:
-        editable_clue_row(6, ["6. CCTV shows", ("Clue 6: suspect", SUSPECTS, "clue_c6_suspect"),
-                              "never left the", ("Clue 6: location", LOCATIONS, "clue_c6_location")])
-    elif n == 7:
-        editable_clue_row(7, ["7. The", ("Clue 7: weapon", WEAPONS, "clue_c7_weapon"),
-                              "never left the", ("Clue 7: location", LOCATIONS, "clue_c7_location")])
-    else:
-        fixed_clue_row(n)
+with st.expander("✅ Confirmed clues", expanded=True):
+    st.caption("Each clue is shown with its propositional form (~ NOT, ∧ AND, ∨ OR, ⇒ IMPLIES). "
+               "Clues 1, 3, 6 and 7 can be changed with the dropdowns; the other clues are fixed. "
+               "Untick a clue to leave it out of both the CSP and the KB.")
+    for n in CLUE_NUMBERS:
+        if n == 1:
+            editable_clue_row(1, ["1. The autopsy", ("Clue 1: found or not", FOUND_CHOICES, "clue_c1_found"),
+                                  ("Clue 1: weapon", WEAPONS, "clue_c1_weapon")])
+        elif n == 3:
+            editable_clue_row(3, ["3. Vikram was alive at", ("Clue 3: time", TIMES, "clue_c3_time")])
+        elif n == 6:
+            editable_clue_row(6, ["6. CCTV shows", ("Clue 6: suspect", SUSPECTS, "clue_c6_suspect"),
+                                  "never left the", ("Clue 6: location", LOCATIONS, "clue_c6_location")])
+        elif n == 7:
+            editable_clue_row(7, ["7. The", ("Clue 7: weapon", WEAPONS, "clue_c7_weapon"),
+                                  "never left the", ("Clue 7: location", LOCATIONS, "clue_c7_location")])
+        else:
+            fixed_clue_row(n)
 
-r1, r2 = st.columns([1, 3], vertical_alignment="center")
-r1.button("Reset clues", on_click=reset_clues, width="stretch")
-r2.caption(f"{len(ENCODED_NUMBERS)} of {len(CASE_CLUES)} clues are encoded as constraints in the solver. "
-           "Reset clues restores clues 1, 3, 6 and 7 only.")
+    b1, b2, b3 = st.columns(3)
+    b1.button("Tick all", on_click=tick_all, args=(True,), width="stretch")
+    b2.button("Untick all", on_click=tick_all, args=(False,), width="stretch")
+    b3.button("Reset clues", on_click=reset_clues, width="stretch")
+    st.caption(f"{len(ENCODED_NUMBERS)} of {len(CASE_CLUES)} clues are encoded as constraints in the solver. "
+               f"{len(CLUE_NUMBERS) - len(off_clues(current_clues()))} are ticked. "
+               "Reset clues restores the dropdowns of clues 1, 3, 6 and 7 and ticks every clue.")
 
 # ---------------- 2. Solve workflow ----------------
 c1, c2 = st.columns(2)
@@ -1016,7 +1058,7 @@ if c1.button("Solve Case", type="primary", width="stretch"):
     clues_now = current_clues()
     with st.spinner("Reasoning through the clues..."):
         original_count = None
-        if changed_clues(clues_now):
+        if is_modified(clues_now):
             original_count = len(run_case(DEFAULT_CLUES)["logic"])   # original case, for the comparison
         results = run_case(clues_now)        # run last, so the globals stay on the solved clues
         results["original_count"] = original_count
@@ -1026,18 +1068,20 @@ c2.button("Reset", on_click=reset_all, width="stretch")
 
 res = st.session_state.get("results")
 solved = active_clues()
-stale = current_clues() != solved     # dropdowns differ from the clues the results were computed with
+stale = current_clues() != solved     # dropdowns or ticks differ from the clues the results were computed with
 
 if stale:
     st.warning(STALE_TEXT)
 elif res is None:
     st.info("Press **Solve Case** to run CSP → logical inference → Bayesian ranking.")
 else:
-    if changed_clues(solved):
+    if is_modified(solved):
         changes = "\n".join(
             f"- Clue {n}: {clue_sentence(n, DEFAULT_CLUES)} `{clue_formula(n, DEFAULT_CLUES)}` → "
             f"{clue_sentence(n, solved)} `{clue_formula(n, solved)}`" for n in changed_clues(solved))
-        st.info(f"**Modified case**\n\n{changes}\n\n"
+        if off_clues(solved):
+            changes += "\n\nOff: " + ", ".join(f"Clue {n}" for n in off_clues(solved)) + "."
+        st.info(f"**Modified case**\n\n{changes.strip()}\n\n"
                 f"Original: {res['original_count']} hypotheses → Modified: {len(res['logic'])}\n\n{MODIFIED_NOTE}")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Initial hypotheses", TOTAL_HYPOTHESES)
@@ -1082,7 +1126,7 @@ with tab_rank:
     elif len(res["logic"]) == 0:
         st.warning("No hypothesis is left after CSP and logic, so there is nothing to rank.")
     else:
-        if changed_clues(solved):
+        if is_modified(solved):
             st.warning(MODIFIED_NOTE)
         rows, err = safe_ranking(res["logic"], obs)
         if err:
@@ -1229,7 +1273,7 @@ with tab_check:
 # ---------------- 7. Temporal reasoning ----------------
 with tab_hmm:
     st.subheader("When did it happen?")
-    if res is not None and not stale and changed_clues(solved):
+    if res is not None and not stale and is_modified(solved):
         st.warning(MODIFIED_NOTE + " The HMM is not recalculated for the modified clues.")
     hmm, hmm_err = safe_hmm()
     if hmm_err:
@@ -1280,7 +1324,9 @@ with tab_diag:
     elif res is None:
         st.info("Solve the case to see the diagnostics.")
     else:
-        st.markdown("**Encoded clues used in the last Solve**")
+        st.markdown("**Encoded clues used in the last Solve** (ticked clues only)")
+        if off_clues(solved):
+            st.caption("Off: " + ", ".join(f"Clue {n}" for n in off_clues(solved)))
         active_labels = [c for _, _, c in unary_constraints] + [c for _, _, _, c in binary_constraints]
         st.dataframe(pd.DataFrame([{
             "Clue": clue_number(c),
