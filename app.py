@@ -616,16 +616,22 @@ BASE_KB = KB
 
 # dropdown values of the original case
 DEFAULT_CLUES = {
-    "c1_found": "did not find", "c1_weapon": "Poison",
+    "c1_found": "found no", "c1_weapon": "Poison",
     "c3_time": "8 PM",
     "c6_suspect": "Kabir", "c6_location": "Kitchen",
     "c7_weapon": "Trophy", "c7_location": "Library",
+    "c11_suspect": "Anita",
 }
 CLUE_NUMBERS = list(range(1, len(CASE_CLUES) + 1))
 DEFAULT_CLUES.update({f"on_{n}": True for n in CLUE_NUMBERS})   # checkbox of each clue: ticked = used
 EDITABLE = {1: ["c1_found", "c1_weapon"], 3: ["c3_time"],
-            6: ["c6_suspect", "c6_location"], 7: ["c7_weapon", "c7_location"]}
-FOUND_CHOICES = ["found", "did not find"]
+            6: ["c6_suspect", "c6_location"], 7: ["c7_weapon", "c7_location"],
+            11: ["c11_suspect"]}
+FOUND_CHOICES = ["found", "found no"]
+ALIVE_TIMES = ["8 PM", "9 PM"]     # alive at 10 PM would leave no possible murder time
+# readable autopsy finding for each weapon (the dropdown still stores the weapon name)
+WEAPON_SIGNS = {"Poison": "signs of poison", "Knife": "knife wounds",
+                "Trophy": "a heavy blow from the trophy", "Scarf": "strangulation marks from the scarf"}
 STALE_TEXT = "Clues changed, press Solve Case to update."
 MODIFIED_NOTE = ("The Bayesian CPTs and HMM were written for the original story, "
                  "so probabilities here are illustrative only.")
@@ -673,15 +679,22 @@ def keep_original(n, c):
     return n not in EDITABLE or is_original(c, n)
 
 
+def times_up_to(t):
+    """t and every earlier time: if Vikram was alive at t, the murder was not at any of these."""
+    return TIMES[:TIMES.index(t) + 1]
+
+
 def clue_sentence(n, c):
     if n == 1:
-        return f"The autopsy {c['c1_found']} {c['c1_weapon']}."
+        return f"The autopsy {c['c1_found']} {WEAPON_SIGNS[c['c1_weapon']]}."
     if n == 3:
-        return f"Vikram was alive at {c['c3_time']}."
+        return f"Vikram was still alive at {c['c3_time']}, so the murder happened later."
     if n == 6:
-        return f"CCTV shows {c['c6_suspect']} never left the {c['c6_location']}."
+        return f"CCTV shows {c['c6_suspect']} never left the {c['c6_location'].lower()}."
     if n == 7:
-        return f"The {c['c7_weapon']} never left the {c['c7_location']}."
+        return f"The {c['c7_weapon'].lower()} never left the {c['c7_location'].lower()}."
+    if n == 11:
+        return f"{c['c11_suspect']} has a broken wrist and cannot lift the trophy."
     return CASE_CLUES[n - 1]
 
 
@@ -690,11 +703,13 @@ def clue_formula(n, c):
         s = sym("Weapon", c["c1_weapon"])
         return s if c["c1_found"] == "found" else "~" + s
     if n == 3:
-        return "~" + sym("Time", c["c3_time"])
+        return " ∧ ".join("~" + sym("Time", t) for t in times_up_to(c["c3_time"]))
     if n == 6:
         return sym("Culprit", c["c6_suspect"]) + " ⇒ " + sym("Location", c["c6_location"])
     if n == 7:
         return sym("Weapon", c["c7_weapon"]) + " ⇒ " + sym("Location", c["c7_location"])
+    if n == 11:
+        return sym("Culprit", c["c11_suspect"]) + " ⇒ ~W_Trophy"
     return FORMULAS[n]
 
 
@@ -711,11 +726,14 @@ def new_constraint(n, c):
             return ("Weapon", lambda x: x == w, text)
         return ("Weapon", lambda x: x != w, text)
     if n == 3:
-        t = c["c3_time"]
-        return ("Time", lambda x: x != t, text)
+        gone = times_up_to(c["c3_time"])
+        return ("Time", lambda x: x not in gone, text)      # the murder happened after the chosen time
     if n == 6:
         s, loc = c["c6_suspect"], c["c6_location"]
         return ("Culprit", "Location", lambda x, y: implies(x == s, y == loc), text)
+    if n == 11:
+        s = c["c11_suspect"]
+        return ("Culprit", "Weapon", lambda x, w: implies(x == s, w != "Trophy"), text)
     w, loc = c["c7_weapon"], c["c7_location"]
     return ("Weapon", "Location", lambda x, y: implies(x == w, y == loc), text)
 
@@ -728,8 +746,11 @@ def new_sentence(n, c):
             return lambda m: m[s]
         return lambda m: not m[s]
     if n == 3:
-        s = sym("Time", c["c3_time"])
-        return lambda m: not m[s]
+        gone = [sym("Time", t) for t in times_up_to(c["c3_time"])]
+        return lambda m: not any(m[s] for s in gone)
+    if n == 11:
+        s = sym("Culprit", c["c11_suspect"])
+        return lambda m: implies(m[s], not m["W_Trophy"])
     if n == 6:
         a, b = sym("Culprit", c["c6_suspect"]), sym("Location", c["c6_location"])
     else:
@@ -1012,8 +1033,10 @@ def fixed_clue_row(n):
 
 
 def editable_clue_row(n, parts):
-    """parts: the text before the first dropdown (checkbox label), then text pieces and (label, options, key)
-    dropdowns, shown left to right, then the live formula. Dropdowns of an unticked clue are greyed out."""
+    """parts: the text before the first dropdown (checkbox label), then text pieces and
+    (label, options, key[, format_func]) dropdowns, shown left to right, then the live formula.
+    format_func only changes what the dropdown shows; the stored value stays the plain name.
+    Dropdowns of an unticked clue are greyed out. A 'Reads as' line shows the whole sentence."""
     cols = st.columns([1.3 if isinstance(p, str) else 1.2 for p in parts] + [1.5], vertical_alignment="center")
     cols[0].checkbox(number_label(parts[0]), key=f"clue_on_{n}")
     off = not is_on(current_clues(), n)
@@ -1021,26 +1044,32 @@ def editable_clue_row(n, parts):
         if isinstance(p, str):
             col.markdown(f":gray[{p}]" if off else p)
         else:
-            col.selectbox(p[0], p[1], key=p[2], label_visibility="collapsed", disabled=off)
+            fmt = p[3] if len(p) > 3 else str
+            col.selectbox(p[0], p[1], key=p[2], format_func=fmt, label_visibility="collapsed", disabled=off)
     cols[-1].markdown(formula_text(n, clue_formula(n, current_clues())))
+    st.caption(f"Reads as: {clue_sentence(n, current_clues())}" + (" (off)" if off else ""))
 
 
 with st.expander("✅ Confirmed clues", expanded=True):
     st.caption("Each clue is shown with its propositional form (~ NOT, ∧ AND, ∨ OR, ⇒ IMPLIES). "
-               "Clues 1, 3, 6 and 7 can be changed with the dropdowns; the other clues are fixed. "
+               "Clues 1, 3, 6, 7 and 11 can be changed with the dropdowns; the other clues are fixed. "
                "Untick a clue to leave it out of both the CSP and the KB.")
     for n in CLUE_NUMBERS:
         if n == 1:
             editable_clue_row(1, ["1. The autopsy", ("Clue 1: found or not", FOUND_CHOICES, "clue_c1_found"),
-                                  ("Clue 1: weapon", WEAPONS, "clue_c1_weapon")])
+                                  ("Clue 1: finding", WEAPONS, "clue_c1_weapon", WEAPON_SIGNS.get)])
         elif n == 3:
-            editable_clue_row(3, ["3. Vikram was alive at", ("Clue 3: time", TIMES, "clue_c3_time")])
+            editable_clue_row(3, ["3. Vikram was still alive at", ("Clue 3: time", ALIVE_TIMES, "clue_c3_time"),
+                                  ", so the murder happened later."])
         elif n == 6:
             editable_clue_row(6, ["6. CCTV shows", ("Clue 6: suspect", SUSPECTS, "clue_c6_suspect"),
-                                  "never left the", ("Clue 6: location", LOCATIONS, "clue_c6_location")])
+                                  "never left the", ("Clue 6: location", LOCATIONS, "clue_c6_location", str.lower)])
         elif n == 7:
-            editable_clue_row(7, ["7. The", ("Clue 7: weapon", WEAPONS, "clue_c7_weapon"),
-                                  "never left the", ("Clue 7: location", LOCATIONS, "clue_c7_location")])
+            editable_clue_row(7, ["7. The", ("Clue 7: weapon", WEAPONS, "clue_c7_weapon", str.lower),
+                                  "never left the", ("Clue 7: location", LOCATIONS, "clue_c7_location", str.lower)])
+        elif n == 11:
+            editable_clue_row(11, ["11.", ("Clue 11: suspect", SUSPECTS, "clue_c11_suspect"),
+                                   "has a broken wrist and cannot lift the trophy."])
         else:
             fixed_clue_row(n)
 
@@ -1050,7 +1079,7 @@ with st.expander("✅ Confirmed clues", expanded=True):
     b3.button("Reset clues", on_click=reset_clues, width="stretch")
     st.caption(f"{len(ENCODED_NUMBERS)} of {len(CASE_CLUES)} clues are encoded as constraints in the solver. "
                f"{len(CLUE_NUMBERS) - len(off_clues(current_clues()))} are ticked. "
-               "Reset clues restores the dropdowns of clues 1, 3, 6 and 7 and ticks every clue.")
+               "Reset clues restores the dropdowns of clues 1, 3, 6, 7 and 11 and ticks every clue.")
 
 # ---------------- 2. Solve workflow ----------------
 c1, c2 = st.columns(2)
