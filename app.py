@@ -620,13 +620,11 @@ DEFAULT_CLUES = {
     "c3_time": "8 PM",
     "c6_suspect": "Kabir", "c6_location": "Kitchen",
     "c7_weapon": "Trophy", "c7_location": "Library",
-    "c11_suspect": "Anita",
 }
 CLUE_NUMBERS = list(range(1, len(CASE_CLUES) + 1))
 DEFAULT_CLUES.update({f"on_{n}": True for n in CLUE_NUMBERS})   # checkbox of each clue: ticked = used
 EDITABLE = {1: ["c1_found", "c1_weapon"], 3: ["c3_time"],
-            6: ["c6_suspect", "c6_location"], 7: ["c7_weapon", "c7_location"],
-            11: ["c11_suspect"]}
+            6: ["c6_suspect", "c6_location"], 7: ["c7_weapon", "c7_location"]}
 FOUND_CHOICES = ["found", "found no"]
 ALIVE_TIMES = ["8 PM", "9 PM"]     # alive at 10 PM would leave no possible murder time
 # readable autopsy finding for each weapon (the dropdown still stores the weapon name)
@@ -693,8 +691,6 @@ def clue_sentence(n, c):
         return f"CCTV shows {c['c6_suspect']} never left the {c['c6_location'].lower()}."
     if n == 7:
         return f"The {c['c7_weapon'].lower()} never left the {c['c7_location'].lower()}."
-    if n == 11:
-        return f"{c['c11_suspect']} has a broken wrist and cannot lift the trophy."
     return CASE_CLUES[n - 1]
 
 
@@ -708,8 +704,6 @@ def clue_formula(n, c):
         return sym("Culprit", c["c6_suspect"]) + " ⇒ " + sym("Location", c["c6_location"])
     if n == 7:
         return sym("Weapon", c["c7_weapon"]) + " ⇒ " + sym("Location", c["c7_location"])
-    if n == 11:
-        return sym("Culprit", c["c11_suspect"]) + " ⇒ ~W_Trophy"
     return FORMULAS[n]
 
 
@@ -731,9 +725,6 @@ def new_constraint(n, c):
     if n == 6:
         s, loc = c["c6_suspect"], c["c6_location"]
         return ("Culprit", "Location", lambda x, y: implies(x == s, y == loc), text)
-    if n == 11:
-        s = c["c11_suspect"]
-        return ("Culprit", "Weapon", lambda x, w: implies(x == s, w != "Trophy"), text)
     w, loc = c["c7_weapon"], c["c7_location"]
     return ("Weapon", "Location", lambda x, y: implies(x == w, y == loc), text)
 
@@ -748,9 +739,6 @@ def new_sentence(n, c):
     if n == 3:
         gone = [sym("Time", t) for t in times_up_to(c["c3_time"])]
         return lambda m: not any(m[s] for s in gone)
-    if n == 11:
-        s = sym("Culprit", c["c11_suspect"])
-        return lambda m: implies(m[s], not m["W_Trophy"])
     if n == 6:
         a, b = sym("Culprit", c["c6_suspect"]), sym("Location", c["c6_location"])
     else:
@@ -1052,7 +1040,7 @@ def editable_clue_row(n, parts):
 
 with st.expander("✅ Confirmed clues", expanded=True):
     st.caption("Each clue is shown with its propositional form (~ NOT, ∧ AND, ∨ OR, ⇒ IMPLIES). "
-               "Clues 1, 3, 6, 7 and 11 can be changed with the dropdowns; the other clues are fixed. "
+               "Clues 1, 3, 6 and 7 can be changed with the dropdowns; the other clues are fixed. "
                "Untick a clue to leave it out of both the CSP and the KB.")
     for n in CLUE_NUMBERS:
         if n == 1:
@@ -1067,9 +1055,6 @@ with st.expander("✅ Confirmed clues", expanded=True):
         elif n == 7:
             editable_clue_row(7, ["7. The", ("Clue 7: weapon", WEAPONS, "clue_c7_weapon", str.lower),
                                   "never left the", ("Clue 7: location", LOCATIONS, "clue_c7_location", str.lower)])
-        elif n == 11:
-            editable_clue_row(11, ["11.", ("Clue 11: suspect", SUSPECTS, "clue_c11_suspect"),
-                                   "has a broken wrist and cannot lift the trophy."])
         else:
             fixed_clue_row(n)
 
@@ -1079,7 +1064,7 @@ with st.expander("✅ Confirmed clues", expanded=True):
     b3.button("Reset clues", on_click=reset_clues, width="stretch")
     st.caption(f"{len(ENCODED_NUMBERS)} of {len(CASE_CLUES)} clues are encoded as constraints in the solver. "
                f"{len(CLUE_NUMBERS) - len(off_clues(current_clues()))} are ticked. "
-               "Reset clues restores the dropdowns of clues 1, 3, 6, 7 and 11 and ticks every clue.")
+               "Reset clues restores the dropdowns of clues 1, 3, 6 and 7 and ticks every clue.")
 
 # ---------------- 2. Solve workflow ----------------
 c1, c2 = st.columns(2)
