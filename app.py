@@ -1015,27 +1015,26 @@ def number_label(text):
 
 
 def fixed_clue_row(n):
-    a, b = st.columns([3, 1.5], vertical_alignment="center")
-    a.checkbox(number_label(f"{n}. {CASE_CLUES[n - 1]}"), key=f"clue_on_{n}")
-    b.markdown(formula_text(n, FORMULAS[n]))
+    """One full-width line: checkbox + full clue text + formula. No columns, so the label wraps
+    instead of being cut off (checkbox labels inside columns are shortened with '…')."""
+    st.checkbox(number_label(f"{n}. {CASE_CLUES[n - 1]}") + "  " + formula_text(n, FORMULAS[n]),
+                key=f"clue_on_{n}")
 
 
-def editable_clue_row(n, parts):
-    """parts: the text before the first dropdown (checkbox label), then text pieces and
-    (label, options, key[, format_func]) dropdowns, shown left to right, then the live formula.
-    format_func only changes what the dropdown shows; the stored value stays the plain name.
-    Dropdowns of an unticked clue are greyed out. A 'Reads as' line shows the whole sentence."""
-    cols = st.columns([1.3 if isinstance(p, str) else 1.2 for p in parts] + [1.5], vertical_alignment="center")
-    cols[0].checkbox(number_label(parts[0]), key=f"clue_on_{n}")
-    off = not is_on(current_clues(), n)
-    for col, p in zip(cols[1:], parts[1:]):
-        if isinstance(p, str):
-            col.markdown(f":gray[{p}]" if off else p)
-        else:
-            fmt = p[3] if len(p) > 3 else str
-            col.selectbox(p[0], p[1], key=p[2], format_func=fmt, label_visibility="collapsed", disabled=off)
-    cols[-1].markdown(formula_text(n, clue_formula(n, current_clues())))
-    st.caption(f"Reads as: {clue_sentence(n, current_clues())}" + (" (off)" if off else ""))
+def editable_clue_block(n, dropdowns):
+    """One bordered block per editable clue:
+    line 1 the checkbox, labelled with the full current sentence (it wraps, never cut off),
+    line 2 the dropdowns side by side (they stack on mobile), line 3 the live formula.
+    dropdowns: (label, options, key[, format_func]); format_func only changes what is shown,
+    the stored value stays the plain name. Dropdowns of an unticked clue are greyed out."""
+    c = current_clues()
+    off = not is_on(c, n)
+    with st.container(border=True):
+        st.checkbox(number_label(f"{n}. {clue_sentence(n, c)}"), key=f"clue_on_{n}")
+        for col, d in zip(st.columns(len(dropdowns)), dropdowns):
+            fmt = d[3] if len(d) > 3 else str
+            col.selectbox(d[0], d[1], key=d[2], format_func=fmt, disabled=off)
+        st.markdown(formula_text(n, clue_formula(n, c)))
 
 
 with st.expander("✅ Confirmed clues", expanded=True):
@@ -1044,17 +1043,16 @@ with st.expander("✅ Confirmed clues", expanded=True):
                "Untick a clue to leave it out of both the CSP and the KB.")
     for n in CLUE_NUMBERS:
         if n == 1:
-            editable_clue_row(1, ["1. The autopsy", ("Clue 1: found or not", FOUND_CHOICES, "clue_c1_found"),
-                                  ("Clue 1: finding", WEAPONS, "clue_c1_weapon", WEAPON_SIGNS.get)])
+            editable_clue_block(1, [("found / found no", FOUND_CHOICES, "clue_c1_found"),
+                                    ("Weapon", WEAPONS, "clue_c1_weapon", WEAPON_SIGNS.get)])
         elif n == 3:
-            editable_clue_row(3, ["3. Vikram was still alive at", ("Clue 3: time", ALIVE_TIMES, "clue_c3_time"),
-                                  ", so the murder happened later."])
+            editable_clue_block(3, [("Time", ALIVE_TIMES, "clue_c3_time")])
         elif n == 6:
-            editable_clue_row(6, ["6. CCTV shows", ("Clue 6: suspect", SUSPECTS, "clue_c6_suspect"),
-                                  "never left the", ("Clue 6: location", LOCATIONS, "clue_c6_location", str.lower)])
+            editable_clue_block(6, [("Suspect", SUSPECTS, "clue_c6_suspect"),
+                                    ("Location", LOCATIONS, "clue_c6_location", str.lower)])
         elif n == 7:
-            editable_clue_row(7, ["7. The", ("Clue 7: weapon", WEAPONS, "clue_c7_weapon", str.lower),
-                                  "never left the", ("Clue 7: location", LOCATIONS, "clue_c7_location", str.lower)])
+            editable_clue_block(7, [("Weapon", WEAPONS, "clue_c7_weapon", str.lower),
+                                    ("Location", LOCATIONS, "clue_c7_location", str.lower)])
         else:
             fixed_clue_row(n)
 
@@ -1168,16 +1166,17 @@ with tab_rank:
                 "Hypothesis": [label(r["hypothesis"], i) for i, r in enumerate(rows, start=1)],
                 "Posterior": [r["probability"] for r in rows],
             })
-            chart = (
-                alt.Chart(chart_df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("Posterior:Q", scale=alt.Scale(domain=[0, 1]), title="Posterior probability"),
-                    y=alt.Y("Hypothesis:N", sort=None, title=None, axis=alt.Axis(labelLimit=260)),
-                    tooltip=["Hypothesis", alt.Tooltip("Posterior:Q", format=".3f")],
-                )
-                .properties(height=28 * len(chart_df) + 40)
+            # every bar keeps its full label: no overlap hiding, no truncation, ~45 px per bar
+            base = alt.Chart(chart_df).encode(
+                x=alt.X("Posterior:Q", scale=alt.Scale(domain=[0, 1]), title="Posterior probability"),
+                y=alt.Y("Hypothesis:N", sort=None, title=None,
+                        axis=alt.Axis(labelOverlap=False, labelLimit=0, labelFontSize=13)),
+                tooltip=["Hypothesis", alt.Tooltip("Posterior:Q", format=".3f")],
             )
+            bars = base.mark_bar(size=24)
+            values = base.mark_text(align="left", dx=4, fontSize=13).encode(
+                text=alt.Text("Posterior:Q", format=".2f"))       # value at the end of each bar
+            chart = (bars + values).properties(height=45 * len(chart_df) + 40, padding={"right": 36})
             st.altair_chart(chart, width="stretch")
 
             # verdict
